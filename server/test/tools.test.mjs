@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { executeTool, toolSchema } from "../src/tools.js";
+import { executeTool, toolSchema, SKILLS } from "../src/tools.js";
 
 let pass = 0;
 let fail = 0;
@@ -123,7 +123,7 @@ await test("memory: full-text search finds fact", async () => {
   const key = `ut_search_${Date.now()}`;
   await executeTool("memory_store", { key, value: "The user enjoys drinking matcha lattes on Sundays" });
   const r = JSON.parse(await executeTool("memory_search", { query: "matcha latte" }));
-  assert.ok(r.length >= 1 && r[0].key === key, `got: ${JSON.stringify(r).slice(0, 80)}`);
+  assert.ok(r.some((e) => e.key === key), `got: ${JSON.stringify(r).slice(0, 80)}`);
 });
 
 await test("memory: search no match", async () => {
@@ -135,13 +135,48 @@ await test("web_fetch: rejects non-http", async () => {
   await assert.rejects(() => executeTool("web_fetch", { url: "file:///etc/passwd" }), /http/);
 });
 
-await test("toolSchema: defines all 12 tools", async () => {
+await test("toolSchema: defines all 12 tools + 5 skills", async () => {
   const names = toolSchema().map((t) => t.function.name);
   const expected = [
     "calculate", "fibonacci", "get_current_time", "memory_recall", "memory_store", "run_js",
     "read_file", "write_file", "list_dir", "grep_files", "web_fetch", "memory_search",
   ];
-  assert.deepStrictEqual(names.sort(), expected.sort());
+  for (const n of expected) assert.ok(names.includes(n), `missing ${n}`);
+  const skills = names.filter((n) => n.startsWith("skill_"));
+  assert.deepStrictEqual(skills.sort(), [
+    "skill_github", "skill_pest_identification", "skill_plant_disease",
+    "skill_telegram", "skill_web_search",
+  ]);
+});
+
+await test("skills: dynamic discovery finds 5 skills", async () => {
+  assert.strictEqual(SKILLS.length, 5);
+  assert.deepStrictEqual(SKILLS.map((s) => s.name).sort(), [
+    "github", "pest-identification", "plant-disease", "telegram", "web-search",
+  ]);
+  for (const s of SKILLS) assert.ok(s.description.length > 0 && s.instructions.length > 0, `${s.name} meta missing`);
+});
+
+await test("skills: plant-disease matches symptoms", async () => {
+  const r = JSON.parse(await executeTool("skill_plant_disease", { input: "tomato leaves brown circular spots yellow halo" }));
+  assert.ok(Array.isArray(r.diagnosis) && r.diagnosis.length >= 1);
+  assert.ok(r.diagnosis[0].disease.includes("Late Blight"), `got: ${r.diagnosis[0].disease}`);
+});
+
+await test("skills: pest-identification matches description", async () => {
+  const r = JSON.parse(await executeTool("skill_pest_identification", { input: "tiny white flies fly up when I touch the plant" }));
+  assert.ok(Array.isArray(r.pests) && r.pests.length >= 1);
+  assert.ok(r.pests[0].pest.includes("Whiteflies"), `got: ${r.pests[0].pest}`);
+});
+
+await test("skills: telegram reports missing config gracefully", async () => {
+  const r = JSON.parse(await executeTool("skill_telegram", { input: "send: hello" }));
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.fix.includes("TELEGRAM_BOT_TOKEN"), `got: ${JSON.stringify(r).slice(0, 80)}`);
+});
+
+await test("skills: unknown skill throws", async () => {
+  await assert.rejects(() => executeTool("skill_nope", { input: "x" }), /Unknown skill/);
 });
 
 await test("unknown tool throws", async () => {

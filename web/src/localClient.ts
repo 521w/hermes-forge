@@ -2,6 +2,18 @@ import { CapacitorHttp } from "@capacitor/core";
 import { isNative } from "./env";
 import type { ToolCallMeta } from "./types";
 
+// Skills are plain JS, executed inside the local client (web + native).
+// @ts-expect-error -- skill modules are untyped plain JS
+import skillWebSearch from "../../skills/web-search/index.js";
+// @ts-expect-error -- skill modules are untyped plain JS
+import skillPlantDisease from "../../skills/plant-disease/index.js";
+// @ts-expect-error -- skill modules are untyped plain JS
+import skillPestIdentification from "../../skills/pest-identification/index.js";
+// @ts-expect-error -- skill modules are untyped plain JS
+import skillGithub from "../../skills/github/index.js";
+// @ts-expect-error -- skill modules are untyped plain JS
+import skillTelegram from "../../skills/telegram/index.js";
+
 export interface LocalSettings {
   baseUrl: string;
   apiKey: string;
@@ -106,6 +118,31 @@ export const LOCAL_TOOLS: ToolDef[] = [
     name: "memory_search",
     description: "Full-text search across all long-term memory entries. Returns the most relevant stored facts.",
     parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer" } }, required: ["query"] },
+  },
+  {
+    name: "skill_web_search",
+    description: "Skill: Search the web for a query and return ranked results with titles, URLs and snippets.",
+    parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+  },
+  {
+    name: "skill_plant_disease",
+    description: "Skill: Diagnose common plant diseases from symptom descriptions and return prevention/treatment advice.",
+    parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+  },
+  {
+    name: "skill_pest_identification",
+    description: "Skill: Identify common garden and crop pests from descriptions and return control advice.",
+    parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+  },
+  {
+    name: "skill_github",
+    description: "Skill: Interact with the public GitHub API - search repos/users/code, fetch repo metadata and READMEs.",
+    parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+  },
+  {
+    name: "skill_telegram",
+    description: "Skill: Send messages and files through the Telegram Bot API (requires TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).",
+    parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
   },
 ];
 
@@ -246,6 +283,16 @@ async function localExecuteTool(name: string, args: Record<string, unknown>): Pr
     case "list_dir":
     case "grep_files":
       return "This tool is only available on the server/web edition (the local app has no workspace filesystem).";
+    case "skill_web_search":
+      return String(await skillWebSearch(args.input));
+    case "skill_plant_disease":
+      return String(await skillPlantDisease(args.input));
+    case "skill_pest_identification":
+      return String(await skillPestIdentification(args.input));
+    case "skill_github":
+      return String(await skillGithub(args.input));
+    case "skill_telegram":
+      return String(await skillTelegram(args.input));
     case "fibonacci":
       return fibonacci(Number(args.n));
     case "currency_convert":

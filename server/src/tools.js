@@ -1,10 +1,12 @@
 import vm from "node:vm";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { MEMORY_DIR, ROOT_DIR } from "./config.js";
 
 const ensureMemoryDir = () => fs.mkdirSync(MEMORY_DIR, { recursive: true });
 const WORKSPACE = ROOT_DIR;
+const SKILLS_DIR = path.join(ROOT_DIR, "skills");
 
 function safeEval(expression) {
   const sandbox = {
@@ -340,6 +342,74 @@ async function fibonacci(n) {
   return out.length > 500 ? `${out.slice(0, 500)}... (${out.length} digits total)` : out;
 }
 
+// ---- Skill framework: dynamically discover `skills/<name>/SKILL.md` and
+// register each skill as a callable tool (Claude Code / Hermes Agent style).
+function parseFrontmatter(md) {
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(md);
+  const meta = {};
+  if (m) {
+    for (const line of m[1].split("\n")) {
+      const i = line.indexOf(":");
+      if (i > 0) meta[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+  }
+  return { meta, body: m ? md.slice(m[0].length) : md };
+}
+
+function discoverSkills() {
+  if (!fs.existsSync(SKILLS_DIR)) return [];
+  const skills = [];
+  for (const entry of fs.readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(SKILLS_DIR, entry.name);
+    const mdPath = path.join(dir, "SKILL.md");
+    if (!fs.existsSync(mdPath)) continue;
+    const { meta, body } = parseFrontmatter(fs.readFileSync(mdPath, "utf-8"));
+    skills.push({
+      name: entry.name,
+      description: meta.description || `Run the ${entry.name} skill.`,
+      dir,
+      instructions: body.trim(),
+    });
+  }
+  return skills;
+}
+
+export const SKILLS = discoverSkills();
+
+for (const s of SKILLS) {
+  toolDefinitions.push({
+    type: "function",
+    function: {
+      name: `skill_${s.name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+      description: `Skill: ${s.description}`,
+      parameters: {
+        type: "object",
+        properties: {
+          input: { type: "string", description: `The task or query to hand to the "${s.name}" skill.` },
+        },
+        required: ["input"],
+      },
+    },
+  });
+}
+
+async function runSkill(name, input) {
+  const skill = SKILLS.find((s) => s.name === name);
+  if (!skill) throw new Error(`Unknown skill: ${name}`);
+  const exec = path.join(skill.dir, "index.js");
+  if (fs.existsSync(exec)) {
+    try {
+      const mod = await import(pathToFileURL(exec).href);
+      const fn = mod.default || mod.run;
+      if (typeof fn === "function") return String(await fn(input));
+    } catch (err) {
+      return `Skill "${name}" execution failed: ${err.message}`;
+    }
+  }
+  return `[${name} skill]\n${skill.instructions}`;
+}
+
 function getCurrentTime(timezone) {
   try {
     return new Intl.DateTimeFormat("en-US", {
@@ -434,6 +504,12 @@ async function memorySearch(query, limit) {
 
 export async function executeTool(name, args) {
   const a = args || {};
+  if (name.startsWith("skill_")) {
+    const toolKey = name.slice("skill_".length);
+    const skill = SKILLS.find((s) => s.name.replace(/[^a-zA-Z0-9_]/g, "_") === toolKey);
+    if (!skill) throw new Error(`Unknown skill: ${name}`);
+    return runSkill(skill.name, a.input);
+  }
   switch (name) {
     case "calculate":
       return safeEval(a.expression);

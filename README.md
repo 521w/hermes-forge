@@ -9,6 +9,7 @@ An agentic workbench built to be **fully compatible with the Hermes model family
   - `Agent` — single-agent agentic loop with tool calls (Hermes native behavior, enhanced).
   - `Crew` — Planner → Executor → Reviewer multi-agent pipeline with an explicit, structured **plan / todo list**, live todo progress, and a reviewer verdict surfaced in the UI.
 - **Built-in tools** (`server/src/tools.js`): math `calculate`, `get_current_time`, sandboxed `run_js` (node:vm), workspace file tools (`read_file`, `write_file`, `list_dir`, `grep_files`), `web_fetch`, long-term `memory_store` / `memory_recall` **and full-text `memory_search`** across sessions, and `fibonacci`.
+- **Dynamic Skills** (`skills/`): a Claude Code / Hermes Agent-style skill system. At startup the server scans `skills/<name>/SKILL.md` and registers each one as a callable `skill_<name>` tool the agent discovers and invokes on demand. Ships with `web-search`, `plant-disease`, `pest-identification`, `github` and `telegram`; adding a folder with a `SKILL.md` + optional `index.js` executor creates a new tool with zero code changes. Skills run identically on the server and inside the Android app.
 - **Persistent sessions** (`server/src/store.js`) stored as JSON under `server/data/`.
 - **Streaming UI**: SSE events drive token-by-token rendering, collapsible tool-call cards with syntax highlighting, a Claude Code-style plan/todo panel, and reviewer verdicts in real time.
 
@@ -89,4 +90,8 @@ web/src/
   App.tsx                Workspace shell (sidebar, composer, modes)
   components/MessageBubble.tsx
   api.ts                 SSE streaming client
+skills/
+  <name>/SKILL.md        Frontmatter (name, description) + usage instructions
+  <name>/index.js        Optional executor (pure JS, runs on server & in-app)
+  _http.js               Shared cross-runtime HTTP helper (fetch / Capacitor)
 ```
