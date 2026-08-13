@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+web/dist/
+web/android/.gradle/
+web/android/build/
+web/android/app/build/
+web/android/.kotlin/
+web/android/app/src/main/assets/
+
+# Signing secrets
+web/android/keystore/
+*.keystore
+
+# Runtime / user data
+server/data/
+server/downloads/
+*.apk
+
+# Test scratch files
+tmp_tooltest_*.txt

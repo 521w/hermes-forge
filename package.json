@@ -1,0 +1,22 @@
+{
+  "name": "hermes-forge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hermes Forge - Agent orchestration workbench, fully compatible with Hermes (Nous Research) via OpenAI protocol, going beyond it with multi-agent orchestration, built-in tools and memory.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w web",
+    "start": "node server/src/index.js",
+    "preview": "npm run build && npm run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Hermes Forge</string>
+    <string name="title_activity_main">Hermes Forge</string>
+    <string name="package_name">com.hermesforge.app</string>
+    <string name="custom_url_scheme">com.hermesforge.app</string>
+</resources>
