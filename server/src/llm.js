@@ -128,6 +128,28 @@ export class HermesClient {
       if (onDelta && call) onDelta({ toolCallDelta: call });
     };
 
+    // Accumulate streaming tool_calls by index. Some providers resend the full
+    // arguments buffer on every chunk: if the new fragment is strictly longer
+    // and a prefix of what we already have, replace instead of appending.
+    const applyToolDelta = (toolCalls, tc) => {
+      const idx = tc.index ?? 0;
+      if (!toolCalls[idx]) {
+        toolCalls[idx] = { id: tc.id || `call_${idx}`, type: "function", function: { name: "", arguments: "" } };
+      }
+      const target = toolCalls[idx];
+      if (tc.id) target.id = tc.id;
+      if (tc.function?.name) target.function.name += tc.function.name;
+      if (tc.function?.arguments) {
+        const frag = tc.function.arguments;
+        if (target.function.arguments && target.function.arguments.startsWith(frag) && frag.length > target.function.arguments.length) {
+          target.function.arguments = frag;
+        } else {
+          target.function.arguments += frag;
+        }
+      }
+      return { index: idx, ...target };
+    };
+
     const flushChunk = (chunk) => {
       if (!chunk || chunk.trim() === "" || chunk.trim() === "data: [DONE]") return;
       let data;
@@ -146,35 +168,28 @@ export class HermesClient {
       }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0;
-          if (!toolCalls[idx]) {
-            toolCalls[idx] = { id: tc.id || `call_${idx}`, type: "function", function: { name: "", arguments: "" } };
-            emitToolDelta(toolCalls[idx]);
-          }
-          if (tc.id) toolCalls[idx].id = tc.id;
-          if (tc.function?.name) {
-            toolCalls[idx].function.name += tc.function.name;
-            emitToolDelta({ index: idx, id: toolCalls[idx].id, type: "function", function: { name: toolCalls[idx].function.name, arguments: toolCalls[idx].function.arguments } });
-          }
-          if (tc.function?.arguments) {
-            toolCalls[idx].function.arguments += tc.function.arguments;
-            emitToolDelta({ index: idx, id: toolCalls[idx].id, type: "function", function: { name: toolCalls[idx].function.name, arguments: toolCalls[idx].function.arguments } });
-          }
+          emitToolDelta(applyToolDelta(toolCalls, tc));
         }
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        flushChunk(trimmed);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          flushChunk(trimmed);
+        }
       }
+    } catch (err) {
+      const wrapped = new Error(`Stream interrupted from ${this.baseUrl}: ${err.message}`);
+      wrapped.status = 0;
+      throw wrapped;
     }
     if (buffer.trim()) flushChunk(buffer.trim());
 

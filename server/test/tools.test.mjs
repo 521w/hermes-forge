@@ -121,8 +121,9 @@ await test("write_file: writes then reads back", async () => {
 
 await test("memory: full-text search finds fact", async () => {
   const key = `ut_search_${Date.now()}`;
-  await executeTool("memory_store", { key, value: "The user enjoys drinking matcha lattes on Sundays" });
-  const r = JSON.parse(await executeTool("memory_search", { query: "matcha latte" }));
+  const uniq = `matcha_latte_${key}`;
+  await executeTool("memory_store", { key, value: `The user enjoys drinking ${uniq} on Sundays` });
+  const r = JSON.parse(await executeTool("memory_search", { query: uniq, limit: 20 }));
   assert.ok(r.some((e) => e.key === key), `got: ${JSON.stringify(r).slice(0, 80)}`);
 });
 

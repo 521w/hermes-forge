@@ -366,6 +366,30 @@ async function chatComplete(
   };
 }
 
+const retryable = (err: unknown) => {
+  const status = (err as { status?: number }).status;
+  return !status || (status >= 500 && status < 600) || status === 429;
+};
+
+async function chatWithRetry(settings: LocalSettings, messages: LLMMessage[]): Promise<{
+  content: string;
+  toolCalls: { id: string; function: { name: string; arguments: string } }[];
+}> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      if (!retryable(lastErr)) break;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 1) + Math.random() * 200));
+    }
+    try {
+      return await chatComplete(settings, messages, toolSchema());
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
 async function executeTurn(
   settings: LocalSettings,
   messages: LLMMessage[],
@@ -373,37 +397,122 @@ async function executeTurn(
 ): Promise<{ content: string; toolCalls: ToolCallMeta[] }> {
   const toolCalls: ToolCallMeta[] = [];
   let finalContent = "";
+  const seen = new Map<string, number>();
+  const maxRounds = 10;
 
-  for (let round = 0; round < 6; round++) {
-    const res = await chatComplete(settings, messages, toolSchema());
+  for (let round = 0; round < maxRounds; round++) {
+    let res: { content: string; toolCalls: { id: string; function: { name: string; arguments: string } }[] };
+    try {
+      res = await chatWithRetry(settings, messages);
+    } catch (err) {
+      if (round === 0) throw err;
+      finalContent += `\n\n[Agent stopped: LLM request failed — ${(err as Error).message}]`;
+      break;
+    }
+
     if (res.content) {
       finalContent += res.content;
       onEvent({ kind: "delta", data: { text: res.content } });
     }
     if (!res.toolCalls.length) break;
 
+    // Termination guard: identical repeated tool calls signal a loop.
+    let repeated = false;
+    for (const c of res.toolCalls) {
+      const key = `${c.function.name}:${c.function.arguments || ""}`;
+      const n = (seen.get(key) || 0) + 1;
+      seen.set(key, n);
+      if (n >= 3) {
+        repeated = true;
+        finalContent += `\n\n[Agent stopped: "${c.function.name}" was called ${n} times with identical arguments — assuming a loop.]`;
+      }
+    }
+    if (repeated) break;
+
     messages.push({ role: "assistant", content: res.content || "", tool_calls: res.toolCalls });
     for (const call of res.toolCalls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(call.function.arguments || "{}");
-      } catch {
-        args = { _raw: call.function.arguments };
-      }
-      onEvent({ kind: "tool_start", data: { name: call.function.name, arguments: call.function.arguments } });
+      const name = call.function.name;
+      const args = parseArgs(call.function.arguments);
+      onEvent({ kind: "tool_start", data: { name, arguments: call.function.arguments } });
       let result: string;
-      try {
-        result = await localExecuteTool(call.function.name, args);
-      } catch (err) {
-        result = `ERROR: ${(err as Error).message}`;
+      if (!LOCAL_TOOLS.some((t) => t.name === name)) {
+        result = `ERROR: unknown tool "${name}". Available tools: ${LOCAL_TOOLS.map((t) => t.name).join(", ")}`;
+      } else if (args._raw !== undefined) {
+        result = `ERROR: could not parse arguments for "${name}" as JSON. Raw: ${JSON.stringify(call.function.arguments).slice(0, 300)}. Call it again with valid JSON.`;
+      } else {
+        try {
+          result = String(await localExecuteTool(name, args));
+        } catch (err) {
+          result = `ERROR: ${(err as Error).message}`;
+        }
       }
-      onEvent({ kind: "tool_result", data: { name: call.function.name, result } });
-      toolCalls.push({ name: call.function.name, arguments: call.function.arguments, result, status: "done" });
-      messages.push({ role: "tool", content: result.slice(0, 8000), tool_call_id: call.id } as unknown as LLMMessage);
+      if (result.length > 8000) result = `${result.slice(0, 8000)}\n...(truncated, ${result.length - 8000} chars omitted)`;
+      onEvent({ kind: "tool_result", data: { name, result } });
+      toolCalls.push({ name, arguments: call.function.arguments, result, status: "done" });
+      messages.push({ role: "tool", content: result, tool_call_id: call.id } as unknown as LLMMessage);
     }
   }
 
   return { content: finalContent, toolCalls };
+}
+
+// Extract the outermost balanced JSON value from a noisy string.
+function repairJson(s: string): string | null {
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      let j = i;
+      let d = 0;
+      let str = false;
+      let escp = false;
+      for (; j < s.length; j++) {
+        const c = s[j];
+        if (str) {
+          if (escp) escp = false;
+          else if (c === "\\") escp = true;
+          else if (c === '"') str = false;
+          continue;
+        }
+        if (c === '"') str = true;
+        else if (c === "{" || c === "[") d++;
+        else if (c === "}" || c === "]") {
+          d--;
+          if (d === 0) return s.slice(i, j + 1);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseArgs(raw: string | undefined): Record<string, unknown> {
+  const s = String(raw || "").trim();
+  if (!s || s === "{}" || s === "[]") return {};
+  try {
+    return JSON.parse(s) as Record<string, unknown>;
+  } catch {
+    const repaired = repairJson(s);
+    if (repaired !== null) {
+      try {
+        return JSON.parse(repaired) as Record<string, unknown>;
+      } catch {
+        /* fall through */
+      }
+    }
+    return { _raw: raw };
+  }
 }
 
 // ---- Modes ----
