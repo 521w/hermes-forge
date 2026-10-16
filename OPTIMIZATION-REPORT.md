@@ -1,7 +1,10 @@
 # hermes-forge — optimization report
 
-Five defects found, fixed, and each one proven by running the new tests against the
+Six defects found, fixed, and each one proven by running the new tests against the
 **original** source (`git archive HEAD` into a clean tree) versus the fixed source.
+
+> Defect 6 is a security issue: if you have ever run this server on an untrusted or
+> shared network, **rotate the LLM API key** — see that section for the live proof.
 
 ## Why this repo
 
@@ -73,6 +76,59 @@ exited with code **0**, telling CI and process managers that a failed start was 
 clean shutdown. Fixed with a `shutdown(signal, exitCode)` path, a 5 s unref'd force
 timer, and `shutdown("uncaughtException", 1)`.
 
+## Defect 6 — any caller can read, overwrite and delete files outside the sessions directory (path traversal)
+
+The most serious defect, and the one with a working exploit. `GET|PATCH|DELETE
+/api/sessions/:id` passed the raw URL parameter into a filesystem path:
+
+```js
+// server/src/store.js — original
+function fileFor(id) {
+  return path.join(SESSIONS_DIR, `${id}.json`);   // `id` is attacker-controlled
+}
+```
+
+Express percent-decodes the parameter *before* the handler runs, so `%2F` becomes a
+real `/` and `%2E%2E` becomes `..`. Nothing validated the id, and the delete route
+even rebuilt the same unsafe path inline in `index.js`. The server calls
+`app.listen(port)` with no host argument, so it binds every interface — on a LAN this
+is unauthenticated remote file access, and the README invites exactly that setup.
+
+Live probe against a running server (canary files placed where `settings.json`
+lives, i.e. one directory above the sessions directory):
+
+| Request | Result |
+| --- | --- |
+| `GET /api/sessions/..%2F..%2F..%2Fsecret` | **200** — returned a file from outside `sessions/`, verbatim |
+| `PATCH …/..%2Fcanary-secret` | **200** — injected `"pwned":"yes"` into that outside file |
+| `DELETE …/..%2Fcanary-secret` | **200** `{"ok":true}` — the outside file **was deleted** |
+| `GET /api/sessions/..%2Fsettings` | **200** — returned `{"llmApiKey":"sk-…"}` in plaintext |
+| `GET /api/settings` (same server) | key correctly masked as `hasKey: true` |
+
+That last pair is the escalation that matters: the settings endpoint goes out of its
+way to hide the key, and this route handed it over anyway. Any `.json` file reachable
+by the server process was readable, writable and deletable.
+
+Fixed in two layers, so the invariant holds no matter which route is added later:
+
+- `store.js` — `isValidSessionId()` accepts only `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`
+  with no `..`, and `fileFor()` **throws** on anything else. Every store function goes
+  through `fileFor`, so the whole module is safe by construction. `deleteSession()`
+  moved into the store (the route previously duplicated the unsafe path join), and
+  `patchSession()` now applies only `title` instead of `Object.assign`-ing the whole
+  request body — that was a second bug in the same handler, letting `PATCH` rewrite the
+  session `id` and inject arbitrary `messages`.
+- `index.js` — each route validates the id first and answers `400 invalid session id`;
+  `deleteSession` returns `404` when nothing was removed. `POST /api/chat` applies the
+  same check to its `sessionId` field, which also flowed into `appendMessage`.
+
+`GET /download/:file` was already correct (`path.basename`), which is what makes this
+an oversight rather than a design choice.
+
+Proven necessary: the new `server/test/session-security.test.mjs` against the original
+source is **1 passed, 6 failed** (canary read, overwritten and deleted; `PATCH`
+returned `id: "hijacked"`), and **7 passed, 0 failed** after the fix.
+
 ## The CI hang
 
 `npm test` was `node --test test/`, and `node --test` with no file arguments collects
@@ -92,11 +148,12 @@ Node 20's `--test` does not expand globs itself), and the workflow gained
 | --- | --- | --- |
 | `llm-stream.test.mjs` | `SyntaxError: no export named 'applyToolDelta'` | 7 passed, 0 failed |
 | `sandbox.test.mjs` | 5 passed, **13 failed** | 18 passed, 0 failed |
+| `session-security.test.mjs` | 1 passed, **6 failed** (canary leaked/deleted) | 7 passed, 0 failed |
 | bare `node --test` (the CI command) | hung, killed at 90 s (exit 124) | 5 files, 0 failed, 7 s |
 | `server-lifecycle.test.mjs` | file did not exist | 4 passed, 0 failed, 0 skipped |
 | `tools.test.mjs` (baseline, unchanged) | 31 checks passed | 31 checks passed |
 
-Full suite from `server/`: `node --test test/*.test.mjs` → **5 files, 5 passed,
+Full suite from `server/`: `node --test test/*.test.mjs` → **6 files, 6 passed,
 0 failed, 0 cancelled, ~7 s**, exit 0.
 
 `server-lifecycle.test.mjs` resolves `express` via `import.meta.resolve` rather than
@@ -114,5 +171,5 @@ verified by moving `node_modules` to the root — 4 passed, 0 skipped.
 
 ## Not changed
 
-No dependency was added. No production behaviour beyond the five defects was touched;
+No dependency was added. No production behaviour beyond the six defects was touched;
 `tools.test.mjs` and `agent-loop.test.mjs` pass unmodified.

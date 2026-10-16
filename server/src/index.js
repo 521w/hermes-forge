@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { HermesClient } from "./llm.js";
 import { toolSchema } from "./tools.js";
 import { loadSettings, saveSettings, ROOT_DIR } from "./config.js";
-import { listSessions, getSession, createSession, appendMessage, patchSession } from "./store.js";
+import { listSessions, getSession, createSession, appendMessage, patchSession, deleteSession, isValidSessionId } from "./store.js";
 import { runSingleAgent, runCrew } from "./agents.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +49,7 @@ app.post("/api/chat", async (req, res) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const session = sessionId ? getSession(sessionId) || createSession() : createSession();
+  const session = sessionId && isValidSessionId(sessionId) ? getSession(sessionId) || createSession() : createSession();
   const effSystem = system || settings.defaultSystem;
 
   const history = (session.messages || [])
@@ -106,6 +106,7 @@ app.post("/api/chat", async (req, res) => {
 app.get("/api/sessions", (_req, res) => res.json(listSessions()));
 
 app.get("/api/sessions/:id", (req, res) => {
+  if (!isValidSessionId(req.params.id)) return res.status(400).json({ error: "invalid session id" });
   const s = getSession(req.params.id);
   if (!s) return res.status(404).json({ error: "not found" });
   res.json(s);
@@ -114,16 +115,13 @@ app.get("/api/sessions/:id", (req, res) => {
 app.post("/api/sessions", (_req, res) => res.json(createSession()));
 
 app.delete("/api/sessions/:id", (req, res) => {
-  const p = path.join(ROOT_DIR, "server", "data", "sessions", `${req.params.id}.json`);
-  try {
-    fs.rmSync(p);
-    res.json({ ok: true });
-  } catch {
-    res.status(404).json({ error: "not found" });
-  }
+  if (!isValidSessionId(req.params.id)) return res.status(400).json({ error: "invalid session id" });
+  if (!deleteSession(req.params.id)) return res.status(404).json({ error: "not found" });
+  res.json({ ok: true });
 });
 
 app.patch("/api/sessions/:id", (req, res) => {
+  if (!isValidSessionId(req.params.id)) return res.status(400).json({ error: "invalid session id" });
   const s = patchSession(req.params.id, req.body || {});
   if (!s) return res.status(404).json({ error: "not found" });
   res.json(s);
