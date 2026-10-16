@@ -149,11 +149,12 @@ Node 20's `--test` does not expand globs itself), and the workflow gained
 | `llm-stream.test.mjs` | `SyntaxError: no export named 'applyToolDelta'` | 7 passed, 0 failed |
 | `sandbox.test.mjs` | 5 passed, **13 failed** | 18 passed, 0 failed |
 | `session-security.test.mjs` | 1 passed, **6 failed** (canary leaked/deleted) | 7 passed, 0 failed |
+| `e2e-chat-sse.test.mjs` | file did not exist (`POST /api/chat` over HTTP untested) | 8 passed, 0 failed |
 | bare `node --test` (the CI command) | hung, killed at 90 s (exit 124) | 5 files, 0 failed, 7 s |
 | `server-lifecycle.test.mjs` | file did not exist | 4 passed, 0 failed, 0 skipped |
 | `tools.test.mjs` (baseline, unchanged) | 31 checks passed | 31 checks passed |
 
-Full suite from `server/`: `node --test test/*.test.mjs` → **6 files, 6 passed,
+Full suite from `server/`: `node --test test/*.test.mjs` → **7 files, 7 passed,
 0 failed, 0 cancelled, ~7 s**, exit 0.
 
 `server-lifecycle.test.mjs` resolves `express` via `import.meta.resolve` rather than
