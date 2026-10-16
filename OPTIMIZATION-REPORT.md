@@ -81,7 +81,8 @@ supposed to stay up. It was executed as a test, never exited, and burned the ful
 6-hour job limit. `--test-timeout` does not contain it.
 
 Fixed three ways: the mock moved to `server/mocks/` (which the runner does not
-collect), `test` now globs `"test/*.test.mjs"`, and the workflow gained
+collect), `test` now globs `test/*.test.mjs` (unquoted, so the shell expands it —
+Node 20's `--test` does not expand globs itself), and the workflow gained
 `timeout-minutes` on both the job and the test step. CI also switched from
 `npm install` to `npm ci` against the committed lockfile, with npm caching.
 
@@ -95,7 +96,7 @@ collect), `test` now globs `"test/*.test.mjs"`, and the workflow gained
 | `server-lifecycle.test.mjs` | file did not exist | 4 passed, 0 failed, 0 skipped |
 | `tools.test.mjs` (baseline, unchanged) | 31 checks passed | 31 checks passed |
 
-Full suite from `server/`: `node --test "test/*.test.mjs"` → **5 files, 5 passed,
+Full suite from `server/`: `node --test test/*.test.mjs` → **5 files, 5 passed,
 0 failed, 0 cancelled, ~7 s**, exit 0.
 
 `server-lifecycle.test.mjs` resolves `express` via `import.meta.resolve` rather than

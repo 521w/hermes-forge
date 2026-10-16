@@ -44,7 +44,7 @@ server comes up somewhere unexpected, or if it exits with `EADDRINUSE`.
 
 ```bash
 cd server
-npm test          # node --test "test/*.test.mjs"
+npm test          # node --test test/*.test.mjs
 ```
 
 The suite covers the 12-tool registry and sandbox, the streaming tool-call
