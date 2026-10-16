@@ -1,6 +1,17 @@
+// Stand-in OpenAI-compatible LLM for local development, so the agent loop can
+// be exercised without a real provider.
+//
+// This file lives in `server/mocks/` on purpose: everything under `server/test/`
+// is picked up by `node --test`, and a long-lived listening server there makes
+// the whole test run hang instead of failing.
+//
+// Start it with `npm run mock` (from `server/`) or `node mocks/mock-llm.mjs`,
+// then point the backend `baseUrl` at `http://127.0.0.1:3999` (no `/v1`;
+// the server appends `/chat/completions` itself).
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 
-const PORT = 3999;
+const PORT = Number(process.env.MOCK_LLM_PORT || 3999);
 
 function sse(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -107,4 +118,21 @@ const server = http.createServer((req, res) => {
   res.end("not found");
 });
 
-server.listen(PORT, () => console.log(`[mock-llm] listening on http://localhost:${PORT}`));
+// Only listen when executed directly; importing this module (e.g. from a test
+// that wants the request handler) must not open a socket.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  server.listen(PORT, () => console.log(`[mock-llm] listening on http://localhost:${PORT}`));
+
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      server.close(() => process.exit(0));
+      // Do not wait forever on lingering keep-alive sockets.
+      setTimeout(() => process.exit(0), 1000).unref();
+    });
+  }
+}
+
+export { server };

@@ -1,3 +1,43 @@
+// Accumulate streaming tool_calls by index.
+//
+// Providers differ in how they stream a tool call: most append fragments, but
+// some resend the whole buffer they have so far on every chunk. Appending
+// unconditionally corrupts the payload for the second kind (`{"exp` + `{"exp…`),
+// while replacing unconditionally truncates the first kind. The discriminator
+// below treats a fragment that starts with what we already hold and is at least
+// as long as it as a full-buffer resend, and anything else as a continuation.
+//
+// Exported so it can be unit-tested without standing up an SSE stream.
+export function applyToolDelta(toolCalls, tc) {
+  const idx = tc.index ?? 0;
+  if (!toolCalls[idx]) {
+    toolCalls[idx] = { id: tc.id || `call_${idx}`, type: "function", function: { name: "", arguments: "" } };
+  }
+  const target = toolCalls[idx];
+  if (tc.id) target.id = tc.id;
+  if (tc.function?.name) {
+    // Same resend-vs-append ambiguity as arguments: a provider that repeats
+    // the whole name must not accumulate "calculatecalculate".
+    const nameFrag = tc.function.name;
+    if (target.function.name && nameFrag.startsWith(target.function.name)) {
+      target.function.name = nameFrag;
+    } else {
+      target.function.name += nameFrag;
+    }
+  }
+  if (tc.function?.arguments) {
+    const frag = tc.function.arguments;
+    // A fragment that strictly extends what we already hold and repeats it
+    // verbatim is a full-buffer resend, not a continuation: replace it.
+    if (target.function.arguments && frag.length >= target.function.arguments.length && frag.startsWith(target.function.arguments)) {
+      target.function.arguments = frag;
+    } else {
+      target.function.arguments += frag;
+    }
+  }
+  return { index: idx, ...target };
+}
+
 export class HermesClient {
   constructor({ baseUrl, apiKey, model }) {
     this.baseUrl = (baseUrl || "").replace(/\/+$/, "");
@@ -126,28 +166,6 @@ export class HermesClient {
 
     const emitToolDelta = (call) => {
       if (onDelta && call) onDelta({ toolCallDelta: call });
-    };
-
-    // Accumulate streaming tool_calls by index. Some providers resend the full
-    // arguments buffer on every chunk: if the new fragment is strictly longer
-    // and a prefix of what we already have, replace instead of appending.
-    const applyToolDelta = (toolCalls, tc) => {
-      const idx = tc.index ?? 0;
-      if (!toolCalls[idx]) {
-        toolCalls[idx] = { id: tc.id || `call_${idx}`, type: "function", function: { name: "", arguments: "" } };
-      }
-      const target = toolCalls[idx];
-      if (tc.id) target.id = tc.id;
-      if (tc.function?.name) target.function.name += tc.function.name;
-      if (tc.function?.arguments) {
-        const frag = tc.function.arguments;
-        if (target.function.arguments && target.function.arguments.startsWith(frag) && frag.length > target.function.arguments.length) {
-          target.function.arguments = frag;
-        } else {
-          target.function.arguments += frag;
-        }
-      }
-      return { index: idx, ...target };
     };
 
     const flushChunk = (chunk) => {
