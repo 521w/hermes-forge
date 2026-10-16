@@ -183,6 +183,44 @@ app.get(/^\/(?!api\/)(?!download\/).*/, (_req, res) => {
 });
 
 const port = loadSettings().port;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`[Hermes Forge] API + static server on http://localhost:${port}`);
 });
+
+// Without this the process ignores SIGTERM/SIGINT, so `npm run dev` (concurrently)
+// leaves the port occupied after Ctrl-C and the next start fails with EADDRINUSE.
+let shuttingDown = false;
+function shutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Hermes Forge] ${signal} received, shutting down.`);
+  // Force exit if lingering SSE connections keep the server open.
+  const force = setTimeout(() => {
+    console.warn("[Hermes Forge] shutdown timed out, forcing exit.");
+    process.exit(exitCode || 1);
+  }, 5000);
+  force.unref();
+  server.close(() => {
+    clearTimeout(force);
+    process.exit(exitCode);
+  });
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// A stray rejection anywhere in the process would otherwise take the whole API
+// down mid-conversation; log it with context and keep serving. Uncaught
+// exceptions are genuine corruption, so those still stop the process — after
+// releasing the port so a supervisor can restart cleanly, and with a non-zero
+// code so CI and process managers can tell a crash from a clean shutdown.
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[Hermes Forge] unhandled rejection:", reason, "at", promise);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[Hermes Forge] uncaught exception:", err);
+  shutdown("uncaughtException", 1);
+});
+
+export { app, server };

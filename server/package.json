@@ -6,7 +6,8 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
-    "test": "node --test test/"
+    "mock": "node mocks/mock-llm.mjs",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "dependencies": {
     "express": "^4.19.2"

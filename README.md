@@ -36,6 +36,31 @@ npm start
 
 Open http://localhost:3001 (or configure the model endpoint in the in-app **Settings** panel).
 
+Note: `PORT` is read from the environment, so if `PORT` is already exported by your
+shell the server silently honours it instead of `3001` — check `echo $PORT` if the
+server comes up somewhere unexpected, or if it exits with `EADDRINUSE`.
+
+## Tests
+
+```bash
+cd server
+npm test          # node --test "test/*.test.mjs"
+```
+
+The suite covers the 12-tool registry and sandbox, the streaming tool-call
+accumulator, the agent loop, and the HTTP server's process lifecycle. It needs no
+API key and makes no outbound calls: the LLM is replaced by
+`server/mocks/mock-llm.mjs`, an OpenAI-compatible stub that the streaming tests
+`import` and bind to an ephemeral port (`listen(0)`). Run it standalone with:
+
+```bash
+npm run mock      # listens on :3999 (override with MOCK_LLM_PORT)
+```
+
+The mock lives in `server/mocks/` rather than `server/test/` on purpose: a bare
+`node --test` collects every file under `test/`, and a mock that only makes sense
+as a server would be executed as a test and hang the runner forever.
+
 ## Config
 
 All settings are user-facing env vars (`.env` / `.env.example`) or editable in-app:
@@ -87,6 +112,8 @@ server/src/
   tools.js    Tool registry & sandboxed executors
   store.js    Session persistence
   config.js   Settings/env
+server/test/  node:test suites (tools, sandbox, streaming, agent loop, lifecycle)
+server/mocks/ OpenAI-compatible LLM stub (not a test; collected only when imported)
 web/src/
   App.tsx                Workspace shell (sidebar, composer, modes)
   components/MessageBubble.tsx

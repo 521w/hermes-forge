@@ -8,29 +8,143 @@ const ensureMemoryDir = () => fs.mkdirSync(MEMORY_DIR, { recursive: true });
 const WORKSPACE = ROOT_DIR;
 const SKILLS_DIR = path.join(ROOT_DIR, "skills");
 
-function safeEval(expression) {
-  const sandbox = {
-    Math,
-    JSON,
-    Date,
-    Number,
-    String,
-    Boolean,
-    Array,
-    Object,
-    parseInt,
-    parseFloat,
-    isNaN,
-    isFinite,
-    console: { log: (...args) => args.map(String).join(" ") },
-  };
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  const result = vm.runInContext(String(expression).slice(0, 2000), sandbox, { timeout: 5000 });
-  if (typeof result === "object" && result !== null) {
-    return JSON.stringify(result, null, 2);
+// Blank out comments and string/template literals so lexical checks cannot be
+// fooled by decoy text (and so real code is not hidden behind quoted noise).
+function stripNonCode(source) {
+  let out = "";
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === "/" && next === "/") {
+      while (i < n && source[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      i++;
+      while (i < n && source[i] !== quote) {
+        if (source[i] === "\\") i++;
+        i++;
+      }
+      i++;
+      out += '""';
+      continue;
+    }
+    out += ch;
+    i++;
   }
-  return String(result);
+  return out;
+}
+
+// `vm` cannot evaluate a dynamic import without a callback, and Node throws
+// ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING from the ESM loader. When the
+// resulting promise is not caught that rejection is *unhandled* and takes the
+// whole server process down. Because codeGeneration.strings is disabled the
+// keyword cannot be assembled at runtime, so a literal `import(` in the source
+// is the whole attack surface: reject it with a clear error instead of a crash.
+function assertNoDynamicImport(source) {
+  if (/\bimport\s*[.(]/.test(stripNonCode(source))) {
+    throw new Error(
+      "Dynamic import is not allowed in the sandbox (it would terminate the host process).",
+    );
+  }
+}
+
+const SANDBOX_TIMEOUT_MS = 5000;
+
+// Sandboxed code can create promises nobody ever observes: a bare
+// `Promise.reject(1)`, or `void (async () => { throw ... })()`, is enough. Node
+// terminates the process on an unhandled rejection, so one `run_js` call could
+// take the whole server down. Promises born in the vm realm are not instances
+// of the host `Promise`, which identifies them exactly; those are contained,
+// while genuine host rejections keep Node's default fatal behaviour.
+const sandboxRejections = [];
+
+function installSandboxRejectionGuard() {
+  if (installSandboxRejectionGuard.installed) return;
+  installSandboxRejectionGuard.installed = true;
+  process.on("unhandledRejection", (reason, promise) => {
+    if (promise instanceof Promise) {
+      process.nextTick(() => {
+        throw reason;
+      });
+      return;
+    }
+    const message = reason && reason.message ? reason.message : String(reason);
+    sandboxRejections.push(message);
+    if (sandboxRejections.length > 20) sandboxRejections.shift();
+  });
+}
+
+// This string is evaluated *inside* the sandbox realm. It must only use
+// primitives that realm already owns, because any host object (even a plain
+// host function such as `console.log`) exposes `Object` via `.constructor`
+// and therefore `.constructor.constructor("return process")()`.
+const SANDBOX_BOOTSTRAP = `
+var __hermesOut = [];
+function __hermesPrint(prefix, args) {
+  var parts = Array.prototype.map.call(args, function (a) { return String(a); });
+  __hermesOut.push(prefix + parts.join(" "));
+}
+var console = {
+  log: function () { __hermesPrint("", arguments); },
+  info: function () { __hermesPrint("", arguments); },
+  warn: function () { __hermesPrint("warn: ", arguments); },
+  error: function () { __hermesPrint("error: ", arguments); },
+};
+`;
+
+async function safeEval(expression) {
+  const source = String(expression ?? "").slice(0, 2000);
+  assertNoDynamicImport(source);
+  installSandboxRejectionGuard();
+  // Null-prototype sandbox + no host objects injected: `this.constructor`,
+  // `Object.constructor`, `console.log.constructor` and friends all resolve to
+  // nothing, and codeGeneration.strings=false disables `new Function`.
+  const sandbox = Object.create(null);
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
+  vm.runInContext(SANDBOX_BOOTSTRAP, sandbox, { timeout: SANDBOX_TIMEOUT_MS });
+
+  sandboxRejections.length = 0;
+  let result;
+  try {
+    result = vm.runInContext(source, sandbox, { timeout: SANDBOX_TIMEOUT_MS });
+  } catch (err) {
+    sandboxRejections.length = 0;
+    throw err;
+  }
+  // `unhandledRejection` fires only after the microtask queue drains, so yield
+  // one macrotask; otherwise a rejection this eval caused would be attributed
+  // to whatever call happens to run next (or silently lost).
+  await new Promise((resolve) => setImmediate(resolve));
+  const escaped = sandboxRejections.slice();
+  sandboxRejections.length = 0;
+
+  const logged = vm.runInContext("__hermesOut.join('\\n')", sandbox);
+
+  let value;
+  if (typeof result === "object" && result !== null) {
+    value = JSON.stringify(result, null, 2);
+  } else if (result !== undefined) {
+    value = String(result);
+  } else {
+    value = "";
+  }
+
+  const parts = [];
+  if (logged) parts.push(logged);
+  if (value) parts.push(value);
+  if (escaped.length) parts.push(`Unhandled rejection: ${escaped.join("; ")}`);
+  return parts.join("\n");
 }
 
 // Resolve a user-supplied relative path inside the workspace, blocking traversal.
